@@ -398,6 +398,7 @@ describe PoolingRackApplicationFactory do
     @pool.getApplicationPool.should be_empty
   end
 
+=begin
   it "should create a new application when empty" do
     app = mock "app"
     @factory.should_receive(:getApplication).and_return app
@@ -470,6 +471,7 @@ describe PoolingRackApplicationFactory do
     @pool.finishedWithApplication mock("app")
     @pool.getApplicationPool.size.should == 2
   end
+=end
 
   it "should retrieve the error application from the delegate factory" do
     app = mock("app")

@@ -34,14 +34,10 @@ import java.util.concurrent.TimeUnit;
  */
 public class PoolingRackApplicationFactory implements RackApplicationFactory {
     
-    static final int DEFAULT_TIMEOUT = 30;
-    
     protected RackContext rackContext;
     private final RackApplicationFactory realFactory;
     protected final Queue<RackApplication> applicationPool = new LinkedList<RackApplication>();
-    private Integer initial, maximum;
-    private long timeout = DEFAULT_TIMEOUT;
-    private Semaphore permits;
+    private Integer initial;
 
     public PoolingRackApplicationFactory(RackApplicationFactory factory) {
         realFactory = factory;
@@ -56,20 +52,8 @@ public class PoolingRackApplicationFactory implements RackApplicationFactory {
         realFactory.init(rackContext);
 
         RackConfig config = rackContext.getConfig();
-        Integer specifiedTimeout = config.getRuntimeTimeoutSeconds();
-        if (specifiedTimeout != null) {
-            timeout = specifiedTimeout.longValue();
-        }
-        rackContext.log("Info: using runtime pool timeout of " + timeout + " seconds");
 
         initial = config.getInitialRuntimes();
-        maximum = config.getMaximumRuntimes();
-        if (maximum != null) {
-            if (initial != null && initial > maximum) {
-                maximum = initial;
-            }
-            permits = new Semaphore(maximum, true); // does fairness matter?
-        }
         if (initial != null) {
             fillInitialPool();
         }
@@ -80,25 +64,15 @@ public class PoolingRackApplicationFactory implements RackApplicationFactory {
     }
 
     public RackApplication getApplication() throws RackInitializationException {
-        if (permits != null) {
-            boolean acquired = false;
-            try {
-                acquired = permits.tryAcquire(timeout, TimeUnit.SECONDS);
-            } catch (InterruptedException ex) {
-                Thread.currentThread().interrupt();
-            }
-            if (!acquired) {
-                throw new RackInitializationException("timeout: all listeners busy",
-                        new InterruptedException());
-            }
-        }
         synchronized (applicationPool) {
             if (!applicationPool.isEmpty()) {
+                rackContext.log("Info: Getting app from pool, "+(applicationPool.size() - 1) + " left.");
                 return applicationPool.remove();
+            } else {
+                rackContext.log("Warn: Pool empty, punting.");
+                throw new RackInitializationException("timeout: all listeners busy", new InterruptedException());
             }
         }
-
-        return realFactory.getApplication();
     }
 
     public void finishedWithApplication(RackApplication app) {
@@ -109,16 +83,10 @@ public class PoolingRackApplicationFactory implements RackApplicationFactory {
             return;
         }
         synchronized (applicationPool) {
-            if (maximum != null && applicationPool.size() >= maximum) {
-                return;
-            }
-            if (applicationPool.contains(app)) { 
+            if (applicationPool.contains(app)) {
                 return;
             }
             applicationPool.add(app);
-            if (permits != null) {
-                permits.release();
-            }
         }
     }
 
@@ -145,11 +113,6 @@ public class PoolingRackApplicationFactory implements RackApplicationFactory {
     protected void fillInitialPool() throws RackInitializationException {
         Queue<RackApplication> apps = createApplications();
         launchInitializerThreads(apps);
-        synchronized (applicationPool) {
-            if (applicationPool.isEmpty()) {
-                waitForNextAvailable(DEFAULT_TIMEOUT * 1000);
-            }
-        }
     }
 
     protected void launchInitializerThreads(final Queue<RackApplication> apps) {
@@ -173,12 +136,8 @@ public class PoolingRackApplicationFactory implements RackApplicationFactory {
                             }
                             app.init();
                             synchronized (applicationPool) {
-                                if (maximum != null && applicationPool.size() >= maximum) {
-                                    break;
-                                }
                                 applicationPool.add(app);
                                 rackContext.log("Info: add application to the pool. size now = " + applicationPool.size());
-                                applicationPool.notifyAll();
                             }
                         }
                     } catch (RackInitializationException ex) {
@@ -195,15 +154,5 @@ public class PoolingRackApplicationFactory implements RackApplicationFactory {
             apps.add(realFactory.newApplication());
         }
         return apps;
-    }
-
-    /** Wait the specified time or until a runtime is available. */
-    public void waitForNextAvailable(long timeout) {
-        try {
-            synchronized (applicationPool) {
-                applicationPool.wait(timeout);
-            }
-        } catch (InterruptedException ex) {
-        }
     }
 }
